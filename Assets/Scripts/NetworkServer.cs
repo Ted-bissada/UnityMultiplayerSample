@@ -5,12 +5,16 @@ using Unity.Networking.Transport;
 using NetworkMessages;
 using System;
 using System.Text;
+using System.Collections.Generic;
 
 public class NetworkServer : MonoBehaviour
 {
     public NetworkDriver m_Driver;
     public ushort serverPort;
     private NativeList<NetworkConnection> m_Connections;
+
+    public Dictionary<string,NetworkObjects.NetworkPlayer> m_players;
+    private Dictionary<string, float> m_timeOfLast;
 
     void Start ()
     {
@@ -23,6 +27,9 @@ public class NetworkServer : MonoBehaviour
             m_Driver.Listen();
 
         m_Connections = new NativeList<NetworkConnection>(16, Allocator.Persistent);
+        m_players = new Dictionary<string, NetworkObjects.NetworkPlayer>();
+        m_timeOfLast = new Dictionary<string, float>();
+        InvokeRepeating("checkConnection", 5.0f, 5.0f);
     }
 
     void SendToClient(string message, NetworkConnection c){
@@ -41,10 +48,10 @@ public class NetworkServer : MonoBehaviour
         m_Connections.Add(c);
         Debug.Log("Accepted a connection");
 
-        //// Example to send a handshake message:
-        // HandshakeMsg m = new HandshakeMsg();
-        // m.player.id = c.InternalId.ToString();
-        // SendToClient(JsonUtility.ToJson(m),c);        
+        ////Example to send a handshake message:
+        HandshakeMsg m = new HandshakeMsg();
+        m.player.id = c.InternalId.ToString();
+        SendToClient(JsonUtility.ToJson(m),c);
     }
 
     void OnData(DataStreamReader stream, int i){
@@ -53,15 +60,32 @@ public class NetworkServer : MonoBehaviour
         string recMsg = Encoding.ASCII.GetString(bytes.ToArray());
         NetworkHeader header = JsonUtility.FromJson<NetworkHeader>(recMsg);
 
-        switch(header.cmd){
+        switch (header.cmd){
             case Commands.HANDSHAKE:
-            HandshakeMsg hsMsg = JsonUtility.FromJson<HandshakeMsg>(recMsg);
-            Debug.Log("Handshake message received!");
+                HandshakeMsg hsMsg = JsonUtility.FromJson<HandshakeMsg>(recMsg);
+                m_players.Add(hsMsg.player.id, hsMsg.player);
+                m_timeOfLast.Add(hsMsg.player.id, System.DateTime.Now.Second);
+                print("recived handshake");
             break;
             case Commands.PLAYER_UPDATE:
-            PlayerUpdateMsg puMsg = JsonUtility.FromJson<PlayerUpdateMsg>(recMsg);
-            Debug.Log("Player update message received!");
-            break;
+
+                print("recived client update");
+                PlayerUpdateMsg puMsg = JsonUtility.FromJson<PlayerUpdateMsg>(recMsg);
+
+                m_timeOfLast[puMsg.player.id] = System.DateTime.Now.Second;
+
+                m_players[puMsg.player.id] = puMsg.player;
+
+                ServerUpdateMsg m = new ServerUpdateMsg();
+                List<NetworkObjects.NetworkPlayer> playerList = new List<NetworkObjects.NetworkPlayer>();
+                foreach (KeyValuePair<string,NetworkObjects.NetworkPlayer> dictionaryItem in m_players) 
+                {
+                    playerList.Add(dictionaryItem.Value);
+                }
+                m.players = playerList;
+                SendToClient(JsonUtility.ToJson(m), m_Connections[i]);
+
+                break;
             case Commands.SERVER_UPDATE:
             ServerUpdateMsg suMsg = JsonUtility.FromJson<ServerUpdateMsg>(recMsg);
             Debug.Log("Server update message received!");
@@ -74,6 +98,8 @@ public class NetworkServer : MonoBehaviour
 
     void OnDisconnect(int i){
         Debug.Log("Client disconnected from server");
+        m_players.Remove(m_Connections[i].InternalId.ToString());
+        m_timeOfLast.Remove(m_Connections[i].InternalId.ToString());
         m_Connections[i] = default(NetworkConnection);
     }
 
@@ -126,4 +152,16 @@ public class NetworkServer : MonoBehaviour
             }
         }
     }
+
+    void checkConnection()
+     {
+         for (int i = 0; i < m_Connections.Length; i++)
+         {
+             if (System.DateTime.Now.Second - m_timeOfLast[m_Connections[i].InternalId.ToString()] >  5.0f)
+             {
+                 OnDisconnect(i);
+             }
+         }
+     }
+
 }
